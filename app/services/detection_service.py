@@ -40,8 +40,21 @@ class DetectionService:
         return image
 
     @staticmethod
-    def _decide_label(ai_score: float, edit_score: float) -> str:
-        if ai_score >= 0.62 and ai_score >= (edit_score + 0.05):
+    def _decide_label(
+        ai_score: float,
+        edit_score: float,
+        model_ready: bool,
+        ai_signature_score: float,
+    ) -> str:
+        ai_threshold = 0.62 if model_ready else 0.56
+        ai_margin = 0.05 if model_ready else 0.03
+        signature_gate = 0.0 if model_ready else 0.54
+
+        if (
+            ai_score >= ai_threshold
+            and ai_score >= (edit_score + ai_margin)
+            and ai_signature_score >= signature_gate
+        ):
             return "ai_generated"
         if edit_score >= 0.54:
             return "manipulated"
@@ -58,20 +71,27 @@ class DetectionService:
         return float(np.clip(0.55 + 0.8 * margin, 0.0, 1.0))
 
     @staticmethod
-    def _build_explanation(label: str, ai_score: float, edit_score: float, confidence: float) -> str:
+    def _build_explanation(
+        label: str,
+        ai_score: float,
+        edit_score: float,
+        confidence: float,
+        model_ready: bool,
+    ) -> str:
+        model_context = "model-backed" if model_ready else "signature-fallback"
         if label == "ai_generated":
             return (
                 "Synthetic-generation signals dominate the ensemble analysis. "
-                f"AI score {ai_score:.2f} vs edit score {edit_score:.2f}, confidence {confidence:.2f}."
+                f"AI score {ai_score:.2f} vs edit score {edit_score:.2f}, confidence {confidence:.2f} ({model_context})."
             )
         if label == "manipulated":
             return (
                 "Artifact-level inconsistencies indicate likely local editing (splicing/copy-move/inpainting). "
-                f"Edit score {edit_score:.2f}, AI score {ai_score:.2f}, confidence {confidence:.2f}."
+                f"Edit score {edit_score:.2f}, AI score {ai_score:.2f}, confidence {confidence:.2f} ({model_context})."
             )
         return (
             "No dominant synthetic or manipulation signatures were found by the ensemble. "
-            f"AI score {ai_score:.2f}, edit score {edit_score:.2f}, confidence {confidence:.2f}."
+            f"AI score {ai_score:.2f}, edit score {edit_score:.2f}, confidence {confidence:.2f} ({model_context})."
         )
 
     def analyze_image(self, image_bytes: bytes, include_heatmap: bool = False) -> DetectionResult:
@@ -84,8 +104,9 @@ class DetectionService:
         edit_score = float(edit_out["score"])
         ai_model_score = float(ai_model_out["score"])
         ai_signature_score = float(ai_signature_out["score"])
+        model_ready = bool(ai_model_out.get("model_ready"))
 
-        model_weight = 0.65 if ai_model_out.get("model_ready") else 0.15
+        model_weight = 0.65 if model_ready else 0.0
         ai_score = float(np.clip(
             model_weight * ai_model_score +
             (1.0 - model_weight) * ai_signature_score,
@@ -94,9 +115,14 @@ class DetectionService:
         ))
         final_score = float(np.clip(max(edit_score, ai_score), 0.0, 1.0))
 
-        label = self._decide_label(ai_score=ai_score, edit_score=edit_score)
+        label = self._decide_label(
+            ai_score=ai_score,
+            edit_score=edit_score,
+            model_ready=model_ready,
+            ai_signature_score=ai_signature_score,
+        )
         confidence = self._compute_confidence(ai_score, edit_score, label)
-        explanation = self._build_explanation(label, ai_score, edit_score, confidence)
+        explanation = self._build_explanation(label, ai_score, edit_score, confidence, model_ready)
 
         heatmap_base64 = None
         if include_heatmap:
@@ -114,8 +140,10 @@ class DetectionService:
                 "edit": edit_out["components"],
                 "ai_model": ai_model_out["components"],
                 "ai_signature": ai_signature_out["components"],
-                "ai_model_ready": ai_model_out.get("model_ready", False),
+                "ai_model_ready": model_ready,
                 "model_loaded_from_checkpoint": ai_model_out.get("model_loaded_from_checkpoint", False),
+                "ai_ensemble_mode": "model_weighted" if model_ready else "signature_fallback",
+                "ai_threshold": 0.62 if model_ready else 0.56,
                 "model_error": ai_model_out.get("model_error"),
             },
             heatmap_base64=heatmap_base64,
