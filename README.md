@@ -38,4 +38,4 @@ This project combines **classical digital forensics + AI-based detection** to pr
 - Fail-safe fallback (works without model checkpoint)
 - Streamlit UI for quick interaction
 - Heatmap visualization (optional)
-The code doesnt work!!
+- The code doesnt work!!
